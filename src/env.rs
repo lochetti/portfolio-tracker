@@ -3,6 +3,7 @@ use std::fs;
 
 pub struct EnvVars {
     pub trades_file: String,
+    pub alpha_vantage_api_key: String,
 }
 
 impl EnvVars {
@@ -16,6 +17,7 @@ impl EnvVars {
 
         EnvVars {
             trades_file: map.get("TRADES_FILENAME").unwrap().to_string(),
+            alpha_vantage_api_key: map.get("ALPHA_VANTAGE_API_KEY").unwrap().to_string(),
         }
     }
 }

@@ -1,5 +1,5 @@
 [package]
-name = "tracker"
+name = "portfolio-tracker"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,3 +9,4 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 axum = "0.5.1"
 serde = {version = "1.0.136", features = ["derive"] }
+rusqlite = { version = "0.27.0", features = ["bundled"] }
