@@ -1,6 +1,9 @@
+mod db;
 mod env;
 
+use anyhow::Result;
 use axum::{
+    extract::Extension,
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -9,16 +12,21 @@ use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() {
-    // build our application with a route
-    let app = Router::new()
-        // `GET /` goes to `root`
-        .route("/", get(root))
-        // `POST /users` goes to `create_user`
-        .route("/users", post(create_user));
-
     let env = env::EnvVars::load();
 
-    println!("my env file has this thing {}", env.trades_file);
+    let pool = match db::prepare_db_and_get_connection().await {
+        Ok(pool) => pool,
+        Err(e) => {
+            println!("Error creating preparing database connection {}", e);
+            return;
+        }
+    };
+
+    // build our application with a route
+    let app = Router::new()
+        .route("/", get(root))
+        .route("/users", post(create_user))
+        .layer(Extension(pool));
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
