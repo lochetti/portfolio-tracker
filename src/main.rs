@@ -1,5 +1,4 @@
 mod db;
-mod env;
 
 use anyhow::Result;
 use axum::{
@@ -8,11 +7,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use dotenv::dotenv;
+use sqlx::SqlitePool;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    let env = env::EnvVars::load();
+    dotenv().ok();
 
     let pool = match db::prepare_db_and_get_connection().await {
         Ok(pool) => pool,
@@ -25,7 +27,7 @@ async fn main() {
     // build our application with a route
     let app = Router::new()
         .route("/", get(root))
-        .route("/users", post(create_user))
+        .route("/trades", post(create_trade))
         .layer(Extension(pool));
 
     // run our app with hyper
@@ -42,31 +44,41 @@ async fn root() -> &'static str {
     "Hello, World!"
 }
 
-async fn create_user(
-    // this argument tells axum to parse the request body
-    // as JSON into a `CreateUser` type
-    Json(payload): Json<CreateUser>,
-) -> Result<Json<User>, StatusCode> {
+async fn create_trade(
+    pool: Extension<Arc<SqlitePool>>,
+    Json(payload): Json<CreateTrade>,
+) -> Result<Json<i64>, StatusCode> {
+    let mut conn = match pool.0.acquire().await {
+        Ok(conn) => conn,
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
     // insert your application logic here
-    let user = User {
-        id: 1337,
-        username: payload.username,
+    let id = match sqlx::query!(
+        r#"
+        INSERT INTO trades ( ticker, date, type, amount, price )
+        VALUES ( ?1, ?2, ?3, ?4, ?5 )
+        "#,
+        payload.ticker,
+        payload.date,
+        payload.r#type,
+        payload.amount,
+        payload.price
+    )
+    .execute(&mut conn)
+    .await
+    {
+        Ok(res) => res.last_insert_rowid(),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
-    // this will be converted into a JSON response
-    // with a status code of `201 Created`
-    Ok(Json(user))
+    Ok(Json(id))
 }
 
-// the input to our `create_user` handler
 #[derive(serde::Deserialize)]
-struct CreateUser {
-    username: String,
-}
-
-// the output to our `create_user` handler
-#[derive(serde::Serialize)]
-struct User {
-    id: u64,
-    username: String,
+struct CreateTrade {
+    ticker: String,
+    date: String,
+    r#type: String,
+    amount: u32,
+    price: String,
 }
