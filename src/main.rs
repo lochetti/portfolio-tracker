@@ -2,9 +2,9 @@ mod db;
 
 use anyhow::Result;
 use axum::{
-    extract::Extension,
+    extract::{Extension, Path},
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use dotenv::dotenv;
@@ -29,6 +29,7 @@ async fn main() {
         .route("/", get(root))
         .route("/trades", post(create_trade))
         .route("/trades", get(list_trades))
+        .route("/trades/:trade_id", delete(delete_trade))
         .layer(Extension(pool));
 
     // run our app with hyper
@@ -58,11 +59,6 @@ async fn create_trade(
     pool: Extension<Arc<SqlitePool>>,
     Json(payload): Json<CreateTrade>,
 ) -> Result<Json<i64>, StatusCode> {
-    let mut conn = match pool.0.acquire().await {
-        Ok(conn) => conn,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-
     let id = match sqlx::query!(
         r#"
         INSERT INTO trades ( ticker, date, type, amount, price )
@@ -74,7 +70,7 @@ async fn create_trade(
         payload.amount,
         payload.price
     )
-    .execute(&mut conn)
+    .execute(&*pool.0)
     .await
     {
         Ok(res) => res.last_insert_rowid(),
@@ -111,4 +107,25 @@ async fn list_trades(
     };
 
     Ok(Json(list_of_trades))
+}
+
+async fn delete_trade(Path(trade_id): Path<i64>, pool: Extension<Arc<SqlitePool>>) -> StatusCode {
+    let deleted_count = match sqlx::query!(
+        r#"
+        DELETE FROM trades WHERE id = ?1
+        "#,
+        trade_id
+    )
+    .execute(&*pool.0)
+    .await
+    {
+        Ok(res) => res.rows_affected(),
+        Err(_e) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    if deleted_count == 1 {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
 }
