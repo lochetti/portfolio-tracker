@@ -58,11 +58,6 @@ async fn create_trade(
     pool: Extension<Arc<SqlitePool>>,
     Json(payload): Json<CreateTrade>,
 ) -> Result<Json<i64>, StatusCode> {
-    let mut conn = match pool.0.acquire().await {
-        Ok(conn) => conn,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-
     let id = match sqlx::query!(
         r#"
         INSERT INTO trades ( ticker, date, type, amount, price )
@@ -74,7 +69,7 @@ async fn create_trade(
         payload.amount,
         payload.price
     )
-    .execute(&mut conn)
+    .execute(&*pool.0)
     .await
     {
         Ok(res) => res.last_insert_rowid(),
