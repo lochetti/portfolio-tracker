@@ -28,6 +28,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(root))
         .route("/trades", post(create_trade))
+        .route("/trades", get(list_trades))
         .layer(Extension(pool));
 
     // run our app with hyper
@@ -44,6 +45,15 @@ async fn root() -> &'static str {
     "Hello, World!"
 }
 
+#[derive(serde::Deserialize)]
+struct CreateTrade {
+    ticker: String,
+    date: String,
+    r#type: String,
+    amount: u32,
+    price: String,
+}
+
 async fn create_trade(
     pool: Extension<Arc<SqlitePool>>,
     Json(payload): Json<CreateTrade>,
@@ -52,7 +62,7 @@ async fn create_trade(
         Ok(conn) => conn,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
-    // insert your application logic here
+
     let id = match sqlx::query!(
         r#"
         INSERT INTO trades ( ticker, date, type, amount, price )
@@ -74,11 +84,31 @@ async fn create_trade(
     Ok(Json(id))
 }
 
-#[derive(serde::Deserialize)]
-struct CreateTrade {
+#[derive(serde::Serialize)]
+struct ListTradesResponse {
+    id: i64,
     ticker: String,
     date: String,
     r#type: String,
-    amount: u32,
+    amount: i64,
     price: String,
+}
+
+async fn list_trades(
+    pool: Extension<Arc<SqlitePool>>,
+) -> Result<Json<Vec<ListTradesResponse>>, StatusCode> {
+    let list_of_trades = match sqlx::query_as!(
+        ListTradesResponse,
+        r#"
+        SELECT id, ticker, date, type, amount, price FROM trades
+        "#,
+    )
+    .fetch_all(&*pool.0)
+    .await
+    {
+        Ok(res) => res,
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    Ok(Json(list_of_trades))
 }
