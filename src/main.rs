@@ -8,7 +8,10 @@ use axum::{
     Json, Router,
 };
 use dotenv::dotenv;
+use serde::Deserialize;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
+use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -30,6 +33,8 @@ async fn main() {
         .route("/trades", post(create_trade))
         .route("/trades", get(list_trades))
         .route("/trades/:trade_id", delete(delete_trade))
+        .route("/prices", get(list_prices))
+        .route("/prices/update", get(update_prices))
         .layer(Extension(pool));
 
     // run our app with hyper
@@ -128,4 +133,73 @@ async fn delete_trade(Path(trade_id): Path<i64>, pool: Extension<Arc<SqlitePool>
     } else {
         StatusCode::NOT_FOUND
     }
+}
+
+#[derive(Deserialize)]
+struct AlphaVantageDailyPriceResponse {
+    #[serde(rename(deserialize = "4. close"))]
+    price: String,
+}
+
+#[derive(Deserialize)]
+struct AlphaVantagePriceApiResponse {
+    #[serde(rename(deserialize = "Time Series (Daily)"))]
+    time_series: HashMap<String, AlphaVantageDailyPriceResponse>,
+}
+
+async fn update_prices(pool: Extension<Arc<SqlitePool>>) -> StatusCode {
+    let alpha_adavantage_key = match env::var("ALPHA_VANTAGE_API_KEY") {
+        Ok(key) => key,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let url = format!("https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IWDA.AMS&apikey={}&outputsize=full", alpha_adavantage_key);
+    let resp = reqwest::get(url)
+        .await
+        .unwrap()
+        .json::<AlphaVantagePriceApiResponse>()
+        .await
+        .unwrap();
+
+    for (key, val) in resp.time_series.iter() {
+        sqlx::query!(
+            r#"
+            INSERT INTO prices ( ticker, date, price )
+            VALUES ( ?1, ?2, ?3 )
+            "#,
+            "IWDA",
+            key,
+            val.price
+        )
+        .execute(&*pool.0)
+        .await
+        .unwrap();
+    }
+    StatusCode::OK
+}
+
+#[derive(serde::Serialize)]
+struct ListPricesResponse {
+    id: i64,
+    ticker: String,
+    date: String,
+    price: String,
+}
+
+async fn list_prices(
+    pool: Extension<Arc<SqlitePool>>,
+) -> Result<Json<Vec<ListPricesResponse>>, StatusCode> {
+    let list_of_prices = match sqlx::query_as!(
+        ListPricesResponse,
+        r#"
+        SELECT id, ticker, date, price FROM prices ORDER by date asc
+        "#,
+    )
+    .fetch_all(&*pool.0)
+    .await
+    {
+        Ok(res) => res,
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    Ok(Json(list_of_prices))
 }
