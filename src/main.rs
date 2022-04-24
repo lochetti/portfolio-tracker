@@ -7,6 +7,8 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use chrono::format::ParseError;
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use dotenv::dotenv;
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -147,20 +149,44 @@ struct AlphaVantagePriceApiResponse {
     time_series: HashMap<String, AlphaVantageDailyPriceResponse>,
 }
 
+#[derive(serde::Serialize)]
+struct LastPriceDate {
+    date: String,
+}
+
 async fn update_prices(pool: Extension<Arc<SqlitePool>>) -> StatusCode {
+    let mut api_output_size = "full";
+    let last_ticker_date = sqlx::query_as!(
+        LastPriceDate,
+        r#"
+        SELECT date from prices where ticker = 'IWDA' ORDER BY date desc limit 1
+        "#
+    )
+    .fetch_one(&*pool.0)
+    .await
+    .unwrap();
+    let last_ticker_date = NaiveDate::parse_from_str(&last_ticker_date.date, "%Y-%m-%d").unwrap();
+
+    if last_ticker_date > Utc::today().naive_utc() + Duration::days(-100) {
+        api_output_size = "compact";
+    }
+
     let alpha_adavantage_key = match env::var("ALPHA_VANTAGE_API_KEY") {
         Ok(key) => key,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
     };
-    let url = format!("https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IWDA.AMS&apikey={}&outputsize=full", alpha_adavantage_key);
+    let url = format!("https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IWDA.AMS&apikey={}&outputsize={}", alpha_adavantage_key, api_output_size);
     let resp = reqwest::get(url)
         .await
         .unwrap()
         .json::<AlphaVantagePriceApiResponse>()
         .await
         .unwrap();
-
-    for (key, val) in resp.time_series.iter() {
+    let prices_to_insert = resp.time_series.iter().filter(|price| {
+        let date = NaiveDate::parse_from_str(price.0, "%Y-%m-%d").unwrap();
+        date > last_ticker_date
+    });
+    for (key, val) in prices_to_insert {
         sqlx::query!(
             r#"
             INSERT INTO prices ( ticker, date, price )
