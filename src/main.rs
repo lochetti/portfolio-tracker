@@ -1,4 +1,5 @@
 mod db;
+mod trade;
 
 use anyhow::Result;
 use axum::{
@@ -32,9 +33,7 @@ async fn main() {
         }
     };
 
-    // build our application with a route
     let app = Router::new()
-        .route("/", get(root))
         .route("/trades", post(create_trade))
         .route("/trades", get(list_trades))
         .route("/trades/:trade_id", delete(delete_trade))
@@ -44,18 +43,11 @@ async fn main() {
         .route("/portfolio", get(generate_portfolio))
         .layer(Extension(pool));
 
-    // run our app with hyper
-    // `axum::Server` is a re-export of `hyper::Server`
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
         .unwrap();
-}
-
-// basic handler that responds with a static string
-async fn root() -> &'static str {
-    "Hello, World!"
 }
 
 #[derive(serde::Deserialize)]
@@ -67,25 +59,24 @@ struct CreateTrade {
     price: String,
 }
 
+impl From<CreateTrade> for trade::CreateTrade {
+    fn from(create_trade: CreateTrade) -> Self {
+        trade::CreateTrade {
+            ticker: create_trade.ticker,
+            date: create_trade.date,
+            r#type: create_trade.r#type,
+            amount: create_trade.amount,
+            price: create_trade.price,
+        }
+    }
+}
+
 async fn create_trade(
     pool: Extension<Arc<SqlitePool>>,
     Json(payload): Json<CreateTrade>,
 ) -> Result<Json<i64>, StatusCode> {
-    let id = match sqlx::query!(
-        r#"
-        INSERT INTO trades ( ticker, date, type, amount, price )
-        VALUES ( ?1, ?2, ?3, ?4, ?5 )
-        "#,
-        payload.ticker,
-        payload.date,
-        payload.r#type,
-        payload.amount,
-        payload.price
-    )
-    .execute(&*pool.0)
-    .await
-    {
-        Ok(res) => res.last_insert_rowid(),
+    let id = match trade::create_trade(&*pool, payload.into()).await {
+        Ok(res) => res,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
@@ -102,19 +93,24 @@ struct ListTradesResponse {
     price: String,
 }
 
+impl From<trade::ListTrade> for ListTradesResponse {
+    fn from(list_trade: trade::ListTrade) -> Self {
+        Self {
+            id: list_trade.id,
+            ticker: list_trade.ticker,
+            date: list_trade.date,
+            r#type: list_trade.r#type,
+            amount: list_trade.amount,
+            price: list_trade.price,
+        }
+    }
+}
+
 async fn list_trades(
     pool: Extension<Arc<SqlitePool>>,
 ) -> Result<Json<Vec<ListTradesResponse>>, StatusCode> {
-    let list_of_trades = match sqlx::query_as!(
-        ListTradesResponse,
-        r#"
-        SELECT id, ticker, date, type, amount, price FROM trades
-        "#,
-    )
-    .fetch_all(&*pool.0)
-    .await
-    {
-        Ok(res) => res,
+    let list_of_trades: Vec<ListTradesResponse> = match trade::list_trades(&*pool).await {
+        Ok(res) => res.into_iter().map(|x| x.into()).collect(),
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
@@ -122,23 +118,15 @@ async fn list_trades(
 }
 
 async fn delete_trade(Path(trade_id): Path<i64>, pool: Extension<Arc<SqlitePool>>) -> StatusCode {
-    let deleted_count = match sqlx::query!(
-        r#"
-        DELETE FROM trades WHERE id = ?1
-        "#,
-        trade_id
-    )
-    .execute(&*pool.0)
-    .await
-    {
-        Ok(res) => res.rows_affected(),
-        Err(_e) => return StatusCode::INTERNAL_SERVER_ERROR,
-    };
-
-    if deleted_count == 1 {
-        StatusCode::OK
-    } else {
-        StatusCode::NOT_FOUND
+    match trade::delete_trade(&*pool, trade_id).await {
+        Ok(deleted_count) => {
+            if deleted_count == 1 {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            }
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -264,20 +252,16 @@ pub struct DailyPrice {
     ticker: String,
 }
 
-#[derive(Clone)]
-pub struct Trade {
-    date: NaiveDate,
-    amount: i64,
-    ticker: String,
-}
-
 #[derive(serde::Serialize)]
 pub struct Portfolio {
     date: NaiveDate,
     amount_in_euros: BigDecimal,
 }
 
-async fn build_porfolio(prices: Vec<DailyPrice>, trades: Vec<Trade>) -> Vec<Portfolio> {
+async fn build_porfolio(
+    prices: Vec<DailyPrice>,
+    trades: Vec<trade::TradeForCalculation>,
+) -> Vec<Portfolio> {
     let mut portfolio: Vec<Portfolio> = Vec::new();
     let mut portfolio_boot_date = trades[0].date;
     let last_price_date = prices[prices.len() - 1].date;
@@ -311,24 +295,10 @@ async fn build_porfolio(prices: Vec<DailyPrice>, trades: Vec<Trade>) -> Vec<Port
 async fn generate_portfolio(
     pool: Extension<Arc<SqlitePool>>,
 ) -> Result<Json<HashMap<String, Vec<Portfolio>>>, StatusCode> {
-    let trades: Vec<Trade> = match sqlx::query!(
-        r#"
-        SELECT date, amount, ticker FROM trades ORDER BY date asc
-        "#,
-    )
-    .fetch_all(&*pool.0)
-    .await
-    {
-        Ok(res) => res,
+    let trades = match trade::list_trades_for_calculation(&*pool).await {
+        Ok(trades) => trades,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
-    .iter()
-    .map(|row| Trade {
-        amount: row.amount,
-        date: NaiveDate::parse_from_str(&row.date, "%Y-%m-%d").unwrap(),
-        ticker: row.ticker.clone(),
-    })
-    .collect();
+    };
 
     let prices: Vec<DailyPrice> = match sqlx::query!(
         r#"
