@@ -218,7 +218,7 @@ async fn list_prices(
     let list_of_prices = match sqlx::query_as!(
         ListPricesResponse,
         r#"
-        SELECT id, ticker, date, price FROM prices ORDER by date asc
+        SELECT id as "id!", ticker, date, price FROM prices ORDER by date asc
         "#,
     )
     .fetch_all(&*pool.0)
